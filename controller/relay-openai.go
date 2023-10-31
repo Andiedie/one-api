@@ -11,8 +11,11 @@ import (
 	"strings"
 )
 
-func openaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*OpenAIErrorWithStatusCode, string) {
+func openaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*OpenAIErrorWithStatusCode, string, string, string) {
 	responseText := ""
+	responseFunctionCallName := ""
+	responseFunctionCallArguments := ""
+
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {
@@ -37,6 +40,14 @@ func openaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*O
 			if data[:6] != "data: " && data[:6] != "[DONE]" {
 				continue
 			}
+			// Ignore invalid results in the first line of azure api results.
+			if c.GetInt("channel") == common.ChannelTypeAzure && !strings.HasPrefix(data[6:], "[DONE]") {
+				var streamResponse ChatCompletionsStreamResponse
+				err := json.Unmarshal([]byte(data[6:]), &streamResponse)
+				if err == nil && streamResponse.Id == "" {
+					continue
+				}
+			}
 			dataChan <- data
 			data = data[6:]
 			if !strings.HasPrefix(data, "[DONE]") {
@@ -50,6 +61,10 @@ func openaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*O
 					}
 					for _, choice := range streamResponse.Choices {
 						responseText += choice.Delta.Content
+						if choice.Delta.FunctionCall != nil {
+							responseFunctionCallName += choice.Delta.FunctionCall.Name
+							responseFunctionCallArguments += choice.Delta.FunctionCall.Arguments
+						}
 					}
 				case RelayModeCompletions:
 					var streamResponse CompletionsStreamResponse
@@ -83,9 +98,9 @@ func openaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*O
 	})
 	err := resp.Body.Close()
 	if err != nil {
-		return errorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), ""
+		return errorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), "", "", ""
 	}
-	return nil, responseText
+	return nil, responseText, responseFunctionCallName, responseFunctionCallArguments
 }
 
 func openaiHandler(c *gin.Context, resp *http.Response, consumeQuota bool, promptTokens int, model string) (*OpenAIErrorWithStatusCode, *Usage) {
