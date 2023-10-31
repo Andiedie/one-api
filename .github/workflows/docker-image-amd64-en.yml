@@ -22,7 +22,7 @@ jobs:
 
       - name: Save version info
         run: |
-          git describe --tags > VERSION 
+          git log -1 --pretty=format:"%H %ct" | awk '{ print substr($1, 1, 8) "-" $2 }' > VERSION 
 
       - name: Translate
         run: |
