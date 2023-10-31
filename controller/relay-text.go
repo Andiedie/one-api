@@ -343,6 +343,7 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 				logContent = "request content: " + string(requestRaw)
 			}
 			common.LogInfo(c, logContent)
+			requestBody = bytes.NewBuffer(requestRaw)
 		}
 		req, err = http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
 		if err != nil {
