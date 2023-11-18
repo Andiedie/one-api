@@ -157,7 +157,7 @@ func countTokenImages(images []*ContentPartImageUrl) (int, []error) {
 	for _, img := range images {
 		if token, err := countTokenImage(img); err != nil {
 			errs = append(errs, err)
-			tokens += 85
+			tokens += 765
 		} else {
 			tokens += token
 		}
