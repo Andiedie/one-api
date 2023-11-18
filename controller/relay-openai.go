@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
@@ -11,10 +12,10 @@ import (
 	"strings"
 )
 
-func openaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*OpenAIErrorWithStatusCode, string, string, string) {
+func openaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*OpenAIErrorWithStatusCode, string) {
 	responseText := ""
-	responseFunctionCallName := ""
-	responseFunctionCallArguments := ""
+	toolCallNames := map[int]string{}
+	toolCalls := map[int]string{}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
@@ -62,8 +63,14 @@ func openaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*O
 					for _, choice := range streamResponse.Choices {
 						responseText += choice.Delta.Content
 						if choice.Delta.FunctionCall != nil {
-							responseFunctionCallName += choice.Delta.FunctionCall.Name
-							responseFunctionCallArguments += choice.Delta.FunctionCall.Arguments
+							toolCallNames[0] += choice.Delta.FunctionCall.Name
+							toolCalls[0] += choice.Delta.FunctionCall.Arguments
+						}
+						for _, toolCall := range choice.Delta.ToolCalls {
+							if toolCall.Function != nil {
+								toolCallNames[toolCall.Index] += toolCall.Function.Name
+								toolCalls[toolCall.Index] += toolCall.Function.Arguments
+							}
 						}
 					}
 				case RelayModeCompletions:
@@ -98,9 +105,19 @@ func openaiStreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*O
 	})
 	err := resp.Body.Close()
 	if err != nil {
-		return errorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), "", "", ""
+		return errorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), ""
 	}
-	return nil, responseText, responseFunctionCallName, responseFunctionCallArguments
+
+	for i := 0; i < len(toolCallNames); i++ {
+		if buf, err := json.MarshalIndent(map[string]string{"name": toolCallNames[i], "arguments": toolCalls[i]}, "", "  "); err != nil {
+			responseText += toolCallNames[i] + toolCalls[i]
+		} else {
+			responseText += string(buf)
+		}
+	}
+
+	fmt.Println(responseText)
+	return nil, responseText
 }
 
 func openaiHandler(c *gin.Context, resp *http.Response, consumeQuota bool, promptTokens int, model string) (*OpenAIErrorWithStatusCode, *Usage) {

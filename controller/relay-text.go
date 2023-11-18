@@ -104,7 +104,7 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 		return errorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
 	}
 
-	fmt.Println(textRequest.Messages)
+	isStream := textRequest.Stream
 
 	if relayMode == RelayModeModerations && textRequest.Model == "" {
 		textRequest.Model = "text-moderation-latest"
@@ -243,8 +243,12 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 	switch relayMode {
 	case RelayModeChatCompletions:
 		promptTokens = countTokenMessages(textRequest.Messages, textRequest.Model)
-		promptTokens += countTokenFunctions(textRequest.Functions, textRequest.Model)
-		promptTokens += countTokenFunctionCall(textRequest.FunctionCall, textRequest.Model)
+		if textRequest.Functions != nil {
+			promptTokens += countTokenFunctions(textRequest.Functions, textRequest.FunctionCall, textRequest.Model)
+		}
+		if textRequest.Tools != nil {
+			promptTokens += countTokenFunctions(textRequest.Tools, textRequest.ToolChoice, textRequest.Model)
+		}
 	case RelayModeCompletions:
 		promptTokens = countTokenInput(textRequest.Prompt, textRequest.Model)
 	case RelayModeModerations:
@@ -370,19 +374,17 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 
 	var req *http.Request
 	var resp *http.Response
-	isStream := textRequest.Stream
 
 	if apiType != APITypeXunfei { // cause xunfei use websocket
 		if common.LogPrompt {
-			requestRaw, err := io.ReadAll(requestBody)
+			requestRaw, err := common.GetBodyReusable(c)
 			var logContent string
 			if err != nil {
 				logContent = fmt.Sprintf("failed to read request body, err: %s", err)
 			} else {
-				logContent = "request content: " + string(requestRaw)
+				logContent = "request content: " + string(reformatJson(requestRaw, false))
 			}
 			common.LogInfo(c, logContent)
-			requestBody = bytes.NewBuffer(requestRaw)
 		}
 		req, err = http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
 		if err != nil {
@@ -467,6 +469,23 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 				quota := 0
 				completionRatio := common.GetCompletionRatio(textRequest.Model)
 				promptTokens = textResponse.Usage.PromptTokens
+
+				if isStream && len(promptImages) > 0 {
+					imageTokens, errs := countTokenImages(promptImages)
+					if len(errs) > 0 {
+						logContent := "error counting image tokens: "
+						for idx, err := range errs {
+							if idx != 0 {
+								logContent += "; "
+							}
+							logContent += err.Error()
+
+						}
+						common.LogError(ctx, logContent)
+					}
+					promptTokens += imageTokens
+				}
+
 				completionTokens = textResponse.Usage.CompletionTokens
 				quota = int(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
 				if ratio != 0 && quota <= 0 {
@@ -499,19 +518,12 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 	switch apiType {
 	case APITypeOpenAI:
 		if isStream {
-			err, responseText, responseFunctionCallName, responseFunctionCallArguments := openaiStreamHandler(c, resp, relayMode)
+			err, responseText := openaiStreamHandler(c, resp, relayMode)
 			if err != nil {
 				return err
 			}
 			textResponse.Usage.PromptTokens = promptTokens
 			textResponse.Usage.CompletionTokens = countTokenText(responseText, textRequest.Model)
-			if responseFunctionCallName != "" {
-				textResponse.Usage.CompletionTokens += countTokenFunctionCall(responseFunctionCallName, textRequest.Model)
-			}
-			if responseFunctionCallArguments != "" {
-				responseFunctionCallArguments = strings.Replace(responseFunctionCallArguments, "\\\"", "\"", -1)
-				textResponse.Usage.CompletionTokens += countTokenFunctionCall(responseFunctionCallArguments, textRequest.Model)
-			}
 			return nil
 		} else {
 			err, usage := openaiHandler(c, resp, consumeQuota, promptTokens, textRequest.Model)

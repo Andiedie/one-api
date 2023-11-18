@@ -1,13 +1,20 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/pkoukk/tiktoken-go"
-	"gorm.io/gorm/utils"
+	_ "golang.org/x/image/webp"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
+	"math"
 	"net/http"
 	"one-api/common"
 	"one-api/model"
@@ -68,6 +75,96 @@ func getTokenNum(tokenEncoder *tiktoken.Tiktoken, text string) int {
 	return len(tokenEncoder.Encode(text, nil, nil))
 }
 
+func resolveResolution(originW, originH, maxLongSide, maxShortSide int) (int, int) {
+	w, h := float64(originW), float64(originH)
+	ratio := w / h
+
+	if w > h {
+		if w > float64(maxLongSide) {
+			w = float64(maxLongSide)
+			h = w / ratio
+		}
+		if h > float64(maxShortSide) {
+			h = float64(maxShortSide)
+			w = h * ratio
+		}
+	} else {
+		if h > float64(maxLongSide) {
+			h = float64(maxLongSide)
+			w = h * ratio
+		}
+		if w > float64(maxShortSide) {
+			w = float64(maxShortSide)
+			h = w / ratio
+		}
+	}
+
+	return int(math.Floor(w)), int(math.Floor(h))
+}
+
+func countTokenImage(img *ContentPartImageUrl) (int, error) {
+	if img.Detail == "low" {
+		return 85, nil
+	}
+
+	var buf []byte
+	if strings.HasPrefix(img.Url, "data:image/") {
+		splitData := strings.Split(img.Url, ",")
+		if len(splitData) != 2 {
+			return 0, fmt.Errorf("invalid image data url")
+		}
+		var err error
+		buf, err = base64.StdEncoding.DecodeString(splitData[1])
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		resp, err := http.Get(img.Url)
+		if err != nil {
+			return 0, err
+		}
+		buf, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return 0, err
+		}
+		err = resp.Body.Close()
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	// get image width & height
+	i, _, err := image.Decode(bytes.NewReader(buf))
+	if err != nil {
+		return 0, err
+	}
+
+	bounds := i.Bounds()
+	width := bounds.Max.X - bounds.Min.X
+	height := bounds.Max.Y - bounds.Min.Y
+
+	width, height = resolveResolution(width, height, 2000, 768)
+
+	h := math.Ceil(float64(height) / 512)
+	w := math.Ceil(float64(width) / 512)
+	tokens := 85 + int(h*w)*170
+	return tokens, nil
+}
+
+func countTokenImages(images []*ContentPartImageUrl) (int, []error) {
+	tokens := 0
+	var errs []error
+	for _, img := range images {
+		if token, err := countTokenImage(img); err != nil {
+			errs = append(errs, err)
+			tokens += 85
+		} else {
+			tokens += token
+		}
+	}
+	return tokens, errs
+}
+
 func countTokenMessages(messages []Message, model string) int {
 	tokenEncoder := getTokenEncoder(model)
 	// Reference:
@@ -117,72 +214,36 @@ func countTokenText(text string, model string) int {
 	return getTokenNum(tokenEncoder, text)
 }
 
-func countTokenFunctionCall(functionCall any, model string) int {
-	if functionCall == nil {
-		return 0
+func reformatJson(v json.RawMessage, indent bool) []byte {
+	var data any
+	if err := json.Unmarshal(v, &data); err != nil {
+		return v
 	}
-	tokenEncoder := getTokenEncoder(model)
-	jsonBytes, err := json.Marshal(functionCall)
+	var buf []byte
+	var err error
+	if indent {
+		buf, err = json.MarshalIndent(data, "", "  ")
+	} else {
+		buf, err = json.Marshal(data)
+	}
 	if err != nil {
-		return 0
+		return v
 	}
-	return getTokenNum(tokenEncoder, string(jsonBytes))
+	return buf
 }
 
-func countTokenFunctions(functions []Function, model string) int {
-	// https://community.openai.com/t/how-to-know-of-tokens-beforehand-when-i-make-function-calling-chat-history-request-witn-nodejs/289060/6
-	if len(functions) == 0 {
+func countTokenFunctions(functions json.RawMessage, functionCall json.RawMessage, model string) int {
+	if functions == nil {
 		return 0
 	}
 	tokenEncoder := getTokenEncoder(model)
 
-	paramSignature := func(name string, pSpec Property, pRequired []string) string {
-		var requiredString string
-		if utils.Contains(pRequired, name) == false {
-			requiredString = "?"
-		}
-		var enumString string
-		if len(pSpec.Enum) > 0 {
-			enumValues := make([]string, len(pSpec.Enum))
-			for i, v := range pSpec.Enum {
-				enumValues[i] = fmt.Sprintf("\"%s\"", v)
-			}
-			enumString = strings.Join(enumValues, " | ")
-		} else {
-			enumString = pSpec.Type
-		}
-		signature := fmt.Sprintf("%s%s: %s, ", name, requiredString, enumString)
-		if pSpec.Description != "" {
-			signature = fmt.Sprintf("// %s\n%s", pSpec.Description, signature)
-		}
-		return signature
-	}
+	tokens := getTokenNum(tokenEncoder, string(reformatJson(functions, true)))
+	tokens = int(float64(tokens) * 0.6)
 
-	functionSignature := func(fSpec Function) string {
-		var params []string
-		for name, p := range fSpec.Parameters.Properties {
-			params = append(params, paramSignature(name, p, fSpec.Parameters.Required))
-		}
-		var descriptionString string
-		if fSpec.Description != "" {
-			descriptionString = fmt.Sprintf("// %s\n", fSpec.Description)
-		}
+	tokens += getTokenNum(tokenEncoder, string(reformatJson(functionCall, false)))
 
-		var paramString string
-		if len(params) > 0 {
-			paramString = fmt.Sprintf("_: {\n%s\n}", strings.Join(params, "\n"))
-		}
-
-		return fmt.Sprintf("%stype %s = (%s) => any;", descriptionString, fSpec.Name, paramString)
-	}
-
-	var functionSignatures []string
-	for _, f := range functions {
-		functionSignatures = append(functionSignatures, functionSignature(f))
-	}
-	functionString := fmt.Sprintf("# Tools\n\n## functions\n\nnamespace functions {\n\n%s\n\n} // namespace functions", strings.Join(functionSignatures, "\n\n"))
-
-	return getTokenNum(tokenEncoder, functionString)
+	return tokens
 }
 
 func errorWrapper(err error, code string, statusCode int) *OpenAIErrorWithStatusCode {
