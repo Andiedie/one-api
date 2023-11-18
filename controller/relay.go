@@ -10,6 +10,34 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type ContentPartType string
+
+//goland:noinspection GoUnusedConst
+const (
+	ContentPartTypeText     ContentPartType = "text"
+	ContentPartTypeImageUrl ContentPartType = "image_url"
+)
+
+type ImageUrlDetail string
+
+//goland:noinspection GoUnusedConst
+const (
+	ImageUrlDetailHigh ImageUrlDetail = "high"
+	ImageUrlDetailLow  ImageUrlDetail = "low"
+	ImageUrlDetailAuto ImageUrlDetail = "auto"
+)
+
+type ContentPartImageUrl struct {
+	Url    string `json:"url"`
+	Detail string `json:"detail"`
+}
+
+type ContentParts struct {
+	Type     ContentPartType      `json:"type"`
+	Text     string               `json:"text,omitempty"`
+	ImageUrl *ContentPartImageUrl `json:"image_url,omitempty"`
+}
+
 type Message struct {
 	Role    string  `json:"role"`
 	Content string  `json:"content"`

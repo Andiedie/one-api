@@ -55,12 +55,57 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 	consumeQuota := c.GetBool("consume_quota")
 	group := c.GetString("group")
 	var textRequest GeneralOpenAIRequest
-	if consumeQuota || channelType == common.ChannelTypeAzure || channelType == common.ChannelTypePaLM {
-		err := common.UnmarshalBodyReusable(c, &textRequest)
-		if err != nil {
-			return errorWrapper(err, "bind_request_body_failed", http.StatusBadRequest)
-		}
+	var promptImages []*ContentPartImageUrl
+
+	rawBody, err := common.GetBodyReusable(c)
+	if err != nil {
+		return errorWrapper(err, "read_request_body_failed", http.StatusInternalServerError)
 	}
+	err = json.Unmarshal(rawBody, &textRequest)
+	switch err := err.(type) {
+	case nil:
+	case *json.UnmarshalTypeError:
+		if err.Field == "messages.content" && err.Value == "array" {
+			type AliasMessage struct {
+				Message
+				Content json.RawMessage `json:"content"`
+			}
+			var request struct {
+				GeneralOpenAIRequest
+				Messages []AliasMessage `json:"messages"`
+			}
+			if err := json.Unmarshal(rawBody, &request); err != nil {
+				return errorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
+			}
+			textRequest = request.GeneralOpenAIRequest
+			for _, msg := range request.Messages {
+				var content []ContentParts
+				if err := json.Unmarshal(msg.Content, &content); err != nil {
+					return errorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
+				}
+				sb := new(strings.Builder)
+				for _, part := range content {
+					if part.Type == ContentPartTypeText {
+						sb.WriteString(part.Text)
+					} else if part.Type == ContentPartTypeImageUrl {
+						promptImages = append(promptImages, part.ImageUrl)
+					}
+				}
+				textRequest.Messages = append(textRequest.Messages, Message{
+					Role:    msg.Role,
+					Name:    msg.Name,
+					Content: sb.String(),
+				})
+			}
+		} else {
+			return errorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
+		}
+	default:
+		return errorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
+	}
+
+	fmt.Println(textRequest.Messages)
+
 	if relayMode == RelayModeModerations && textRequest.Model == "" {
 		textRequest.Model = "text-moderation-latest"
 	}
@@ -236,18 +281,14 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 			return errorWrapper(err, "pre_consume_token_quota_failed", http.StatusForbidden)
 		}
 	}
-	if isModelMapped {
-		// azure's model is in url, not request body
-		if channelType != common.ChannelTypeAzure {
-			err := common.SetBodyReusable(c, func(body []byte) ([]byte, error) {
-				return sjson.SetBytes(body, "model", textRequest.Model)
-			})
-			if err != nil {
-				return errorWrapper(err, "set_request_body_failed", http.StatusInternalServerError)
-			}
-		}
-	}
 	var requestBody io.Reader = c.Request.Body
+	if isModelMapped {
+		buf, err := sjson.SetBytes(rawBody, "model", textRequest.Model)
+		if err != nil {
+			return errorWrapper(err, "set_request_body_failed", http.StatusInternalServerError)
+		}
+		requestBody = bytes.NewBuffer(buf)
+	}
 	switch apiType {
 	case APITypeClaude:
 		claudeRequest := requestOpenAI2Claude(textRequest)
