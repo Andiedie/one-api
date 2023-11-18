@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tidwall/sjson"
 	"io"
 	"math"
 	"net/http"
@@ -141,13 +142,7 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 			requestURL = fmt.Sprintf("%s?api-version=%s", requestURL, apiVersion)
 			baseURL = c.GetString("base_url")
 			task := strings.TrimPrefix(requestURL, "/v1/")
-			model_ := textRequest.Model
-			model_ = strings.Replace(model_, ".", "", -1)
-			// https://github.com/songquanpeng/one-api/issues/67
-			model_ = strings.TrimSuffix(model_, "-0301")
-			model_ = strings.TrimSuffix(model_, "-0314")
-			model_ = strings.TrimSuffix(model_, "-0613")
-			fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/%s", baseURL, model_, task)
+			fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/%s", baseURL, textRequest.Model, task)
 		}
 	case APITypeClaude:
 		fullRequestURL = "https://api.anthropic.com/v1/complete"
@@ -241,16 +236,18 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 			return errorWrapper(err, "pre_consume_token_quota_failed", http.StatusForbidden)
 		}
 	}
-	var requestBody io.Reader
 	if isModelMapped {
-		jsonStr, err := json.Marshal(textRequest)
-		if err != nil {
-			return errorWrapper(err, "marshal_text_request_failed", http.StatusInternalServerError)
+		// azure's model is in url, not request body
+		if channelType != common.ChannelTypeAzure {
+			err := common.SetBodyReusable(c, func(body []byte) ([]byte, error) {
+				return sjson.SetBytes(body, "model", textRequest.Model)
+			})
+			if err != nil {
+				return errorWrapper(err, "set_request_body_failed", http.StatusInternalServerError)
+			}
 		}
-		requestBody = bytes.NewBuffer(jsonStr)
-	} else {
-		requestBody = c.Request.Body
 	}
+	var requestBody io.Reader = c.Request.Body
 	switch apiType {
 	case APITypeClaude:
 		claudeRequest := requestOpenAI2Claude(textRequest)

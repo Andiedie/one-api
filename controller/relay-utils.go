@@ -32,13 +32,13 @@ func InitTokenEncoders() {
 	if err != nil {
 		common.FatalLog(fmt.Sprintf("failed to get gpt-4 token encoder: %s", err.Error()))
 	}
-	for model, _ := range common.ModelRatio {
-		if strings.HasPrefix(model, "gpt-3.5") {
-			tokenEncoderMap[model] = gpt35TokenEncoder
-		} else if strings.HasPrefix(model, "gpt-4") {
-			tokenEncoderMap[model] = gpt4TokenEncoder
+	for m := range common.ModelRatio {
+		if strings.HasPrefix(m, "gpt-3.5") {
+			tokenEncoderMap[m] = gpt35TokenEncoder
+		} else if strings.HasPrefix(m, "gpt-4") {
+			tokenEncoderMap[m] = gpt4TokenEncoder
 		} else {
-			tokenEncoderMap[model] = nil
+			tokenEncoderMap[m] = nil
 		}
 	}
 	common.SysLog("token encoders initialized")
@@ -118,6 +118,9 @@ func countTokenText(text string, model string) int {
 }
 
 func countTokenFunctionCall(functionCall any, model string) int {
+	if functionCall == nil {
+		return 0
+	}
 	tokenEncoder := getTokenEncoder(model)
 	jsonBytes, err := json.Marshal(functionCall)
 	if err != nil {
