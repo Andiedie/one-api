@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tidwall/sjson"
 	"io"
 	"net/http"
 	"one-api/common"
 	"one-api/model"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,13 +21,13 @@ func isWithinRange(element string, value int) bool {
 		return false
 	}
 
-	min := common.DalleGenerationImageAmounts[element][0]
-	max := common.DalleGenerationImageAmounts[element][1]
+	_min := common.DalleGenerationImageAmounts[element][0]
+	_max := common.DalleGenerationImageAmounts[element][1]
 
-	return value >= min && value <= max
+	return value >= _min && value <= _max
 }
 
-func relayImageHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
+func relayImageHelper(c *gin.Context, _ int) *OpenAIErrorWithStatusCode {
 	imageModel := "dall-e-2"
 	imageSize := "1024x1024"
 
@@ -36,12 +38,14 @@ func relayImageHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode 
 	consumeQuota := c.GetBool("consume_quota")
 	group := c.GetString("group")
 
+	rawBody, err := common.GetBodyReusable(c)
+	if err != nil {
+		return errorWrapper(err, "read_request_body_failed", http.StatusInternalServerError)
+	}
+
 	var imageRequest ImageRequest
-	if consumeQuota {
-		err := common.UnmarshalBodyReusable(c, &imageRequest)
-		if err != nil {
-			return errorWrapper(err, "bind_request_body_failed", http.StatusBadRequest)
-		}
+	if err := json.Unmarshal(rawBody, &imageRequest); err != nil {
+		return errorWrapper(err, "bind_request_body_failed", http.StatusBadRequest)
 	}
 
 	// Size validation
@@ -79,6 +83,10 @@ func relayImageHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode 
 		return errorWrapper(errors.New("prompt is too long"), "prompt_too_long", http.StatusBadRequest)
 	}
 
+	if imageRequest.N == 0 {
+		imageRequest.N = 1
+	}
+
 	// Number of generated images validation
 	if isWithinRange(imageModel, imageRequest.N) == false {
 		return errorWrapper(errors.New("invalid value of n"), "n_not_within_range", http.StatusBadRequest)
@@ -103,16 +111,28 @@ func relayImageHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode 
 	if c.GetString("base_url") != "" {
 		baseURL = c.GetString("base_url")
 	}
-	fullRequestURL := getFullRequestURL(baseURL, requestURL, channelType)
-	var requestBody io.Reader
-	if isModelMapped {
-		jsonStr, err := json.Marshal(imageRequest)
-		if err != nil {
-			return errorWrapper(err, "marshal_text_request_failed", http.StatusInternalServerError)
+
+	var fullRequestURL string
+	switch channelType {
+	case common.ChannelTypeAzure:
+		task := strings.TrimPrefix(requestURL, "/v1/")
+		query := c.Request.URL.Query()
+		apiVersion := query.Get("api-version")
+		if apiVersion == "" {
+			apiVersion = c.GetString("api_version")
 		}
-		requestBody = bytes.NewBuffer(jsonStr)
-	} else {
-		requestBody = c.Request.Body
+		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s", baseURL, imageRequest.Model, task, apiVersion)
+	default:
+		fullRequestURL = getFullRequestURL(baseURL, requestURL, channelType)
+	}
+
+	var requestBody io.Reader = c.Request.Body
+	if isModelMapped {
+		buf, err := sjson.SetBytes(rawBody, "model", imageRequest.Model)
+		if err != nil {
+			return errorWrapper(err, "set_request_body_failed", http.StatusInternalServerError)
+		}
+		requestBody = bytes.NewBuffer(buf)
 	}
 
 	modelRatio := common.GetModelRatio(imageModel)
@@ -130,7 +150,14 @@ func relayImageHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode 
 	if err != nil {
 		return errorWrapper(err, "new_request_failed", http.StatusInternalServerError)
 	}
-	req.Header.Set("Authorization", c.Request.Header.Get("Authorization"))
+	switch channelType {
+	case common.ChannelTypeAzure:
+		apiKey := c.Request.Header.Get("Authorization")
+		apiKey = strings.TrimPrefix(apiKey, "Bearer ")
+		req.Header.Set("api-key", apiKey)
+	default:
+		req.Header.Set("Authorization", c.Request.Header.Get("Authorization"))
+	}
 
 	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	req.Header.Set("Accept", c.Request.Header.Get("Accept"))
