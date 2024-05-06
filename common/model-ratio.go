@@ -119,6 +119,50 @@ func GetModelRatio(name string) float64 {
 }
 
 func GetCompletionRatio(name string) float64 {
+	// 必须用全称
+	if name == "gpt-3.5-turbo-0301" || name == "gpt-35-turbo-0301" {
+		return 1.333333
+	}
+	if name == "gpt-3.5-turbo-0613" || name == "gpt-35-turbo-0613" {
+		return 1.333333
+	}
+	if name == "gpt-3.5-turbo-1106" || name == "gpt-35-turbo-1106" {
+		return 2
+	}
+	if name == "gpt-3.5-turbo-0125" || name == "gpt-35-turbo-0125" {
+		return 3
+	}
+
+	if name == "gpt-3.5-turbo-16k-0613" || name == "gpt-35-turbo-16k-0613" {
+		return 1.333333
+	}
+
+	if name == "gpt-4-turbo-2024-04-09" {
+		return 3
+	}
+	if name == "gpt-4-1106-preview" {
+		return 3
+	}
+	if name == "gpt-4-0125-preview" {
+		return 3
+	}
+	if name == "gpt-4-1106-vision-preview" {
+		return 3
+	}
+
+	if name == "gpt-4-0314" {
+		return 2
+	}
+	if name == "gpt-4-0613" {
+		return 2
+	}
+	if name == "gpt-4-32k-0314" {
+		return 2
+	}
+	if name == "gpt-4-32k-0613" {
+		return 2
+	}
+
 	if strings.HasPrefix(name, "gpt-3.5") {
 		if strings.HasSuffix(name, "1106") {
 			return 2
