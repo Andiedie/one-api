@@ -1,8 +1,11 @@
 package model
 
 import (
+	"encoding/json"
 	"gorm.io/gorm"
 	"one-api/common"
+	"sort"
+	"strings"
 )
 
 type Channel struct {
@@ -104,6 +107,30 @@ func (channel *Channel) Insert() error {
 }
 
 func (channel *Channel) Update() error {
+	mm := make(map[string]string)
+	if channel.ModelMapping != nil {
+		if err := json.Unmarshal([]byte(*channel.ModelMapping), &mm); err != nil {
+			return err
+		}
+	}
+	reverseMM := make(map[string]string)
+	for k, v := range mm {
+		reverseMM[v] = k
+	}
+	finalModels := make(map[string]struct{})
+	for _, model := range strings.Split(channel.Models, ",") {
+		finalModels[model] = struct{}{}
+		if reverseMM[model] != "" {
+			finalModels[reverseMM[model]] = struct{}{}
+		}
+	}
+	models := make([]string, 0, len(finalModels))
+	for model := range finalModels {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	channel.Models = strings.Join(models, ",")
+
 	var err error
 	err = DB.Model(channel).Updates(channel).Error
 	if err != nil {
