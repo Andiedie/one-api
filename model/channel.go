@@ -113,15 +113,15 @@ func (channel *Channel) Update() error {
 			return err
 		}
 	}
-	reverseMM := make(map[string]string)
+	reverseMM := make(map[string][]string)
 	for k, v := range mm {
-		reverseMM[v] = k
+		reverseMM[v] = append(reverseMM[v], k)
 	}
 	finalModels := make(map[string]struct{})
 	for _, model := range strings.Split(channel.Models, ",") {
 		finalModels[model] = struct{}{}
-		if reverseMM[model] != "" {
-			finalModels[reverseMM[model]] = struct{}{}
+		for _, m := range reverseMM[model] {
+			finalModels[m] = struct{}{}
 		}
 	}
 	models := make([]string, 0, len(finalModels))
