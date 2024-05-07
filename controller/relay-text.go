@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"io"
 	"math"
@@ -79,22 +80,29 @@ func relayTextHelper(c *gin.Context, relayMode int) *OpenAIErrorWithStatusCode {
 			}
 			textRequest = request.GeneralOpenAIRequest
 			for _, msg := range request.Messages {
-				var content []ContentParts
-				if err := json.Unmarshal(msg.Content, &content); err != nil {
-					return errorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
-				}
-				sb := new(strings.Builder)
-				for _, part := range content {
-					if part.Type == ContentPartTypeText {
-						sb.WriteString(part.Text)
-					} else if part.Type == ContentPartTypeImageUrl {
-						promptImages = append(promptImages, part.ImageUrl)
+				var strContent string
+				if gjson.ParseBytes(msg.Content).Type == gjson.String {
+					strContent = string(msg.Content)
+				} else {
+					var content []ContentParts
+					if err := json.Unmarshal(msg.Content, &content); err != nil {
+						return errorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
 					}
+					sb := new(strings.Builder)
+					for _, part := range content {
+						if part.Type == ContentPartTypeText {
+							sb.WriteString(part.Text)
+						} else if part.Type == ContentPartTypeImageUrl {
+							promptImages = append(promptImages, part.ImageUrl)
+						}
+					}
+					strContent = sb.String()
 				}
+
 				textRequest.Messages = append(textRequest.Messages, Message{
 					Role:    msg.Role,
 					Name:    msg.Name,
-					Content: sb.String(),
+					Content: strContent,
 				})
 			}
 		} else {
