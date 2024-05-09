@@ -80,6 +80,7 @@ func Distribute() func(c *gin.Context) {
 		c.Set("channel_id", channel.Id)
 		c.Set("channel_name", channel.Name)
 		c.Set("model_mapping", channel.GetModelMapping())
+		c.Header("X-Channel-Id", strconv.Itoa(channel.Id))
 		c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
 		c.Set("base_url", channel.GetBaseURL())
 		switch channel.Type {
